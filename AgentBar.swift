@@ -233,12 +233,25 @@ final class Model: ObservableObject {
 // The island is OS chrome, so it uses true black: in dark mode it must merge with the notch.
 // Light mode follows the system theme on request. Claude's own orange marks a busy session (it is the ✻ spinner glyph).
 struct Palette {
+    var isDark: Bool { island == .black }
     let island, text, dim, hover, codex, stall: Color
     static let dark = Palette(island: .black, text: Color(white: 0.96), dim: Color(white: 0.6),
                               hover: .white.opacity(0.09), codex: Color(red: 0.48, green: 0.64, blue: 0.97), stall: Color(red: 0.96, green: 0.65, blue: 0.14))
     static let light = Palette(island: Color(white: 0.985), text: Color(white: 0.11), dim: Color(white: 0.45),
                                hover: .black.opacity(0.055), codex: Color(red: 0.16, green: 0.38, blue: 0.85), stall: Color(red: 0.78, green: 0.45, blue: 0.0))
 }
+// one pastel per project, stable across runs, so the same repo is always the same color.
+// A worktree under <repo>/.claude/worktrees/ takes its repo's color. Hues are 36° apart and skip muddy yellow-green.
+// ponytail: 10 hues by hash, two projects can share one; assign by order if that bites
+let pathHues: [Double] = [0, 25, 45, 140, 170, 195, 215, 245, 280, 320]
+func pathColor(_ cwd: String, dark: Bool) -> Color {
+    let root = cwd.components(separatedBy: "/.claude/worktrees/")[0]
+    let hash = root.utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }   // FNV-1a, String.hashValue changes per launch
+    let hue = pathHues[Int(hash % UInt32(pathHues.count))] / 360
+    // pastel on black; on the light island the same hue darker, or it would wash out
+    return dark ? Color(hue: hue, saturation: 0.45, brightness: 0.95) : Color(hue: hue, saturation: 0.65, brightness: 0.6)
+}
+
 // kitty's font: it sets no font_family, so it uses its macOS default, Menlo
 func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("Menlo", size: size).weight(weight) }
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
@@ -246,7 +259,7 @@ let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 let spring = Animation.spring(response: 0.45, dampingFraction: 0.82)
 let listCap: CGFloat = 520
 let expandedWidth: CGFloat = max(780, notchWidth + 500)
-let pillWidth: CGFloat = notchWidth + 160
+let pillWidth: CGFloat = notchWidth + 200   // room after "busy" before the notch
 let flare: CGFloat = 8   // the concave curve where the island meets the top edge of the screen
 
 // notch size from the screen, or a plain 32pt bar on screens without one
@@ -315,7 +328,7 @@ struct Row: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(snippet(s.lastMsg)).font(mono(15)).foregroundStyle(pal.text).lineLimit(1)
                         HStack(spacing: 6) {
-                            Text(s.cwd).lineLimit(1).truncationMode(.head)
+                            Text(s.cwd).lineLimit(1).truncationMode(.head).foregroundStyle(pathColor(s.cwd, dark: pal.isDark))
                             if !s.codex.isEmpty && !open {
                                 Label("\(s.codex.count)", systemImage: "gearshape.2").foregroundStyle(pal.codex)
                             }
@@ -357,6 +370,7 @@ struct Island: View {
     @State private var hovered: Int32?
     @State private var opened: Int32?
     @State private var listHeight: CGFloat = 0
+    @State private var rowHeight: CGFloat = 48
 
     var body: some View {
         let pal = scheme == .dark ? Palette.dark : Palette.light
@@ -380,6 +394,7 @@ struct Island: View {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(model.sessions) { s in
                             Row(s: s, open: opened == s.pid, pal: pal)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if opened != s.pid && s.pid > 0 { rowHeight = $0 } }
                                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(hovered == s.pid && s.pid > 0 ? pal.hover : .clear))
                                 .onHover { h in
@@ -399,7 +414,8 @@ struct Island: View {
                 .scrollIndicators(.automatic)
                 // laid out at the final width from the first frame, so the text never rewraps while the island stretches;
                 // the growing outline uncovers it instead
-                .frame(width: expandedWidth, height: min(listHeight, listCap))
+                // five rows tall at most, the rest scrolls
+                .frame(width: expandedWidth, height: min(listHeight, 5 * (rowHeight + 1) + 20, listCap))
                 .onHover { if $0 { ui.reachedList = true } }
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.28).delay(0.06)),
                                         removal: .opacity.animation(.easeIn(duration: 0.08))))
@@ -516,5 +532,6 @@ func selftest() {
     precondition(etimeSeconds("00:13") == 13 && etimeSeconds("2-00:00:01") == 172_801 && etimeSeconds("01:02:03") == 3723)
     precondition(snippet(String(repeating: "a", count: snippetLen + 10)).count == snippetLen + 1)
     precondition(snippet("a\nb") == "a b")
+    precondition(pathColor("~/x/anc/.claude/worktrees/opt", dark: true) == pathColor("~/x/anc", dark: true))
     print("selftest ok")
 }
