@@ -21,6 +21,7 @@ struct Session: Identifiable {
     let busy: Bool
     let lastMsg: String
     let lastAt: Date?
+    var lastReply: String? = nil
     let tty: String?
     let kittyWin: String?
     var codex: [Codex] = []
@@ -85,6 +86,18 @@ func lastUserMessage(_ lines: [Substring]) -> (text: String, at: Date?)? {
     return nil
 }
 
+// Claude's last text reply in a transcript (tool calls and thinking skipped)
+func lastClaudeReply(_ lines: [Substring]) -> String? {
+    for l in lines.reversed() {
+        guard let d = json(l), d["type"] as? String == "assistant", let m = d["message"] as? [String: Any],
+              let parts = m["content"] as? [[String: Any]] else { continue }
+        let t = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+    }
+    return nil
+}
+
 func lastCodexSay(_ lines: [Substring]) -> String? {
     for l in lines.reversed() {
         guard let d = json(l), let p = d["payload"] as? [String: Any],
@@ -135,7 +148,8 @@ func scan() -> [Session] {
             .map { "\(home)/.claude/projects/\($0)/\(sid).jsonl" }.first { fm.fileExists(atPath: $0) }
         let env = sh(["/bin/ps", "-Eww", "-o", "command=", "-p", "\(pid)"])
         let tty = sh(["/bin/ps", "-o", "tty=", "-p", "\(pid)"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let msg = transcript.flatMap { lastUserMessage(tailLines($0)) ?? lastUserMessage(tailLines($0, bytes: .max)) }
+        let tail = transcript.map { tailLines($0) } ?? []
+        let msg = lastUserMessage(tail) ?? transcript.flatMap { lastUserMessage(tailLines($0, bytes: .max)) }
         bySessionId[sid] = pid
         let session = Session(
             pid: pid,
@@ -144,7 +158,8 @@ func scan() -> [Session] {
             lastMsg: msg?.text ?? "(no message yet)",
             lastAt: msg?.at,
             tty: tty.isEmpty || tty == "??" ? nil : "/dev/\(tty)",
-            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) })
+            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) },
+            lastReply: lastClaudeReply(tail))
         // a session with no typed message yet is not listed, unless it owns a codex run (added below)
         if msg == nil { pending[pid] = session } else { sessions[pid] = session }
     }
@@ -337,7 +352,16 @@ struct Row: View {
                     Spacer(minLength: 8)
                     Text(ago(s.lastAt)).font(mono(12)).foregroundStyle(pal.dim)
                 }
-                if open && s.lastMsg.count > snippetLen { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
+                if open {
+                    if s.lastMsg.count > snippetLen { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
+                    if let r = s.lastReply {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("✻").foregroundStyle(claudeOrange)
+                            Text(r).lineLimit(6).foregroundStyle(pal.dim)
+                        }
+                        .font(mono(13)).padding(.leading, 20).transition(.opacity)
+                    }
+                }
             } else {
                 Text(s.cwd).font(mono(12)).foregroundStyle(pal.dim)
             }
@@ -527,6 +551,8 @@ func selftest() {
     precondition(lastUserMessage(lines + [#"{"type":"queue-operation","operation":"enqueue","content":"mid turn"}"#])?.text == "mid turn")
     precondition(lastUserMessage(lines + [#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>x"}"#])?.text == "real ask")
     precondition(lastUserMessage(lines)?.at == isoFrac.date(from: "2026-10-09T11:23:46.043Z") && lastUserMessage(lines)?.at != nil)
+    precondition(lastClaudeReply([#"{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]}}"#,
+                                  #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#]) == "all done")
     precondition(lastCodexSay([#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
                          #"{"type":"event_msg","payload":{"type":"token_count"}}"#]) == "done")
     precondition(etimeSeconds("00:13") == 13 && etimeSeconds("2-00:00:01") == 172_801 && etimeSeconds("01:02:03") == 3723)
