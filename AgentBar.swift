@@ -402,6 +402,7 @@ struct Island: View {
                 }
                 .scrollIndicators(.automatic)
                 .frame(height: min(listHeight, listCap))
+                .onHover { if $0 { ui.reachedList = true } }
                 .transition(.opacity.animation(.easeOut(duration: 0.2).delay(0.1)))
             }
         }
@@ -420,22 +421,25 @@ final class UIState: ObservableObject {
     @Published var expanded = false
     var resize: (Bool) -> Void = { _ in }
     private var inside = false
+    var reachedList = false   // the pointer went down into the open list, not only across the pill
     func hover(_ h: Bool) {
         inside = h
         if h { if !expanded { expand() }; return }
-        // short grace so a pointer that slips past the edge does not slam it shut
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in if !inside { collapse() } }
+        // a pointer that only brushed the pill closes it at once; after using the list, a short grace
+        // so a pointer that slips past the edge does not slam it shut
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.25 : 0.03)) { [self] in if !inside { collapse() } }
     }
     // grow the window first, then stretch the island inside it
     func expand() {
+        reachedList = false
         resize(true)
         withAnimation(spring) { expanded = true }
     }
     // shrink the island, then the window once the animation is done
     func collapse() {
         guard expanded else { return }
-        withAnimation(spring) { expanded = false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in if !expanded { resize(false) } }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) { expanded = false }   // closing is quicker than opening
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [self] in if !expanded { resize(false) } }
     }
 }
 
