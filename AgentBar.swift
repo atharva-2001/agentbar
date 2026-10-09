@@ -427,7 +427,7 @@ final class UIState: ObservableObject {
         if h { if !expanded { expand() }; return }
         // a pointer that only brushed the pill closes it at once; after using the list, a short grace
         // so a pointer that slips past the edge does not slam it shut
-        DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.25 : 0.03)) { [self] in if !inside { collapse() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.08 : 0)) { [self] in if !inside { collapse() } }
     }
     // grow the window first, then stretch the island inside it
     func expand() {
@@ -438,8 +438,8 @@ final class UIState: ObservableObject {
     // shrink the island, then the window once the animation is done
     func collapse() {
         guard expanded else { return }
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) { expanded = false }   // closing is quicker than opening
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [self] in if !expanded { resize(false) } }
+        withAnimation(.spring(response: 0.2, dampingFraction: 1)) { expanded = false }   // closing is quicker than opening
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [self] in if !expanded { resize(false) } }
     }
 }
 
