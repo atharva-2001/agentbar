@@ -230,7 +230,7 @@ final class Model: ObservableObject {
 }
 
 // MARK: tokens
-// The island is OS chrome, so it uses the system face (SF Pro) and true black: in dark mode it must merge with the notch.
+// The island is OS chrome, so it uses true black: in dark mode it must merge with the notch.
 // Light mode follows the system theme on request. Claude's own orange marks a busy session (it is the ✻ spinner glyph).
 struct Palette {
     let island, text, dim, hover, codex, stall: Color
@@ -239,11 +239,13 @@ struct Palette {
     static let light = Palette(island: Color(white: 0.985), text: Color(white: 0.11), dim: Color(white: 0.45),
                                hover: .black.opacity(0.055), codex: Color(red: 0.16, green: 0.38, blue: 0.85), stall: Color(red: 0.78, green: 0.45, blue: 0.0))
 }
+// kitty's font: it sets no font_family, so it uses its macOS default, Menlo
+func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("Menlo", size: size).weight(weight) }
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 
 let spring = Animation.spring(response: 0.45, dampingFraction: 0.82)
 let listCap: CGFloat = 520
-let expandedWidth: CGFloat = max(680, notchWidth + 420)
+let expandedWidth: CGFloat = max(780, notchWidth + 500)
 let pillWidth: CGFloat = notchWidth + 160
 let flare: CGFloat = 8   // the concave curve where the island meets the top edge of the screen
 
@@ -292,7 +294,7 @@ struct FullText: View {
     let text: String
     let pal: Palette
     var body: some View {
-        Text(text).font(.system(size: 12)).foregroundStyle(pal.text.opacity(0.85)).lineSpacing(2)
+        Text(text).font(mono(13)).foregroundStyle(pal.text.opacity(0.85)).lineSpacing(2)
             .padding(10).frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(pal.hover))
             .transition(.opacity)
@@ -308,23 +310,23 @@ struct Row: View {
         VStack(alignment: .leading, spacing: 4) {
             if s.pid > 0 {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(s.busy ? "✻" : "○").font(.system(size: s.busy ? 13 : 9, weight: .bold))
+                    Text(s.busy ? "✻" : "○").font(mono(s.busy ? 15 : 11, .bold))
                         .foregroundStyle(s.busy ? claudeOrange : pal.dim).frame(width: 12)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(snippet(s.lastMsg)).font(.system(size: 13)).foregroundStyle(pal.text).lineLimit(1)
+                        Text(snippet(s.lastMsg)).font(mono(15)).foregroundStyle(pal.text).lineLimit(1)
                         HStack(spacing: 6) {
                             Text(s.cwd).lineLimit(1).truncationMode(.head)
                             if !s.codex.isEmpty && !open {
                                 Label("\(s.codex.count)", systemImage: "gearshape.2").foregroundStyle(pal.codex)
                             }
-                        }.font(.system(size: 11)).foregroundStyle(pal.dim)
+                        }.font(mono(12)).foregroundStyle(pal.dim)
                     }
                     Spacer(minLength: 8)
-                    Text(ago(s.lastAt)).font(.system(size: 11).monospacedDigit()).foregroundStyle(pal.dim)
+                    Text(ago(s.lastAt)).font(mono(12)).foregroundStyle(pal.dim)
                 }
                 if open && s.lastMsg.count > snippetLen { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
             } else {
-                Text(s.cwd).font(.system(size: 11)).foregroundStyle(pal.dim)
+                Text(s.cwd).font(mono(12)).foregroundStyle(pal.dim)
             }
             // codex runs stay hidden until the pointer is on their session (always shown for runs with no live session)
             if open || s.pid < 0 {
@@ -337,7 +339,7 @@ struct Row: View {
                             .foregroundStyle(stalled ? pal.stall : pal.dim).lineLimit(1)
                         Spacer(minLength: 8)
                     }
-                    .font(.system(size: 12)).padding(.leading, 20)
+                    .font(mono(13)).padding(.leading, 20)
                     .transition(.opacity)
                     FullText(text: c.lastSay, pal: pal).padding(.leading, 40)
                 }
@@ -369,7 +371,7 @@ struct Island: View {
                 if codex > 0 { Image(systemName: "gearshape.2").foregroundStyle(pal.codex); Text("\(codex)") }
                 Text("\(live.count)").contentTransition(.numericText())
             }
-            .font(.system(size: 12, weight: .semibold)).foregroundStyle(pal.text)
+            .font(mono(13, .bold)).foregroundStyle(pal.text)
             .padding(.horizontal, 14)
             .frame(width: pillWidth, height: notchHeight)
 
