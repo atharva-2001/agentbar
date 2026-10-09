@@ -7,9 +7,9 @@ session and the codex runs each session dispatched.
 - Hover the island to open it. Move the pointer off to close it.
 - Rows are sorted by your last message, newest first. Each row shows the first 90 characters, the folder and the message age.
 - Sessions with no typed message are hidden. The theme follows the system light or dark setting.
-- Hover the bubble icon to see the full message. For a codex run, it shows the last codex reply.
+- Rest the pointer on a row to grow it: it shows the full message, its codex runs and the last reply of each run.
 - Click a row to focus that session's kitty window.
-- Codex runs are hidden until you hover their session row. The row shows a gear count when it has runs.
+- Codex runs are hidden until the row grows. The row shows a gear count when it has runs.
 - Codex rows show run time and the age of the last rollout write. After 12 minutes with no write the
   row turns orange (the RUNBOOK_CODEX stall rule).
 

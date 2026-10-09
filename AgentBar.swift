@@ -287,19 +287,7 @@ struct IslandShape: Shape {
     }
 }
 
-// hover the bubble icon: the full text opens under the row, inside the island
-// (a system tooltip needs the app active, which would take focus from kitty)
-struct Bubble: View {
-    let key: String
-    @Binding var open: String?
-    let pal: Palette
-    var body: some View {
-        Image(systemName: open == key ? "text.bubble.fill" : "text.bubble").foregroundStyle(pal.dim)
-            .frame(width: 22, height: 22).contentShape(Rectangle())
-            .onHover { h in withAnimation(.easeOut(duration: 0.15)) { open = h ? key : (open == key ? nil : open) } }
-    }
-}
-
+// full text of a message, shown when its row is open (a system tooltip needs the app active, which would take focus from kitty)
 struct FullText: View {
     let text: String
     let pal: Palette
@@ -311,11 +299,11 @@ struct FullText: View {
     }
 }
 
+// hover a row and rest on it: the row grows to show the full message, its codex runs and what each run said last
 struct Row: View {
     let s: Session
-    let hovered: Bool
+    let open: Bool
     let pal: Palette
-    @State private var open: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if s.pid > 0 {
@@ -326,21 +314,20 @@ struct Row: View {
                         Text(snippet(s.lastMsg)).font(.system(size: 13)).foregroundStyle(pal.text).lineLimit(1)
                         HStack(spacing: 6) {
                             Text(s.cwd).lineLimit(1).truncationMode(.head)
-                            if !s.codex.isEmpty && !hovered {
+                            if !s.codex.isEmpty && !open {
                                 Label("\(s.codex.count)", systemImage: "gearshape.2").foregroundStyle(pal.codex)
                             }
                         }.font(.system(size: 11)).foregroundStyle(pal.dim)
                     }
                     Spacer(minLength: 8)
                     Text(ago(s.lastAt)).font(.system(size: 11).monospacedDigit()).foregroundStyle(pal.dim)
-                    Bubble(key: "msg", open: $open, pal: pal).alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
                 }
-                if open == "msg" { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
+                if open && s.lastMsg.count > snippetLen { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
             } else {
                 Text(s.cwd).font(.system(size: 11)).foregroundStyle(pal.dim)
             }
             // codex runs stay hidden until the pointer is on their session (always shown for runs with no live session)
-            if hovered || s.pid < 0 {
+            if open || s.pid < 0 {
                 ForEach(s.codex) { c in
                     let stalled = c.lastWrite.map { Date().timeIntervalSince($0) > 12 * 60 } ?? false   // RUNBOOK_CODEX stall rule
                     HStack(spacing: 8) {
@@ -349,11 +336,10 @@ struct Row: View {
                         Text(stalled ? "Stalled, no write for \(ago(c.lastWrite))" : "Running \(ago(c.startedAt)), last write \(ago(c.lastWrite)) ago")
                             .foregroundStyle(stalled ? pal.stall : pal.dim).lineLimit(1)
                         Spacer(minLength: 8)
-                        Bubble(key: "\(c.pid)", open: $open, pal: pal)
                     }
                     .font(.system(size: 12)).padding(.leading, 20)
                     .transition(.opacity)
-                    if open == "\(c.pid)" { FullText(text: c.lastSay, pal: pal).padding(.leading, 40) }
+                    FullText(text: c.lastSay, pal: pal).padding(.leading, 40)
                 }
             }
         }
@@ -367,6 +353,7 @@ struct Island: View {
     @ObservedObject var ui: UIState
     @Environment(\.colorScheme) private var scheme
     @State private var hovered: Int32?
+    @State private var opened: Int32?
     @State private var listHeight: CGFloat = 0
 
     var body: some View {
@@ -390,10 +377,17 @@ struct Island: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(model.sessions) { s in
-                            Row(s: s, hovered: hovered == s.pid, pal: pal)
+                            Row(s: s, open: opened == s.pid, pal: pal)
                                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(hovered == s.pid && s.pid > 0 ? pal.hover : .clear))
-                                .onHover { h in withAnimation(.easeOut(duration: 0.18)) { hovered = h ? s.pid : (hovered == s.pid ? nil : hovered) } }
+                                .onHover { h in
+                                    withAnimation(.easeOut(duration: 0.12)) { hovered = h ? s.pid : (hovered == s.pid ? nil : hovered) }
+                                    if !h { if opened == s.pid { withAnimation(.easeOut(duration: 0.2)) { opened = nil } }; return }
+                                    // a short rest before the row grows, so sweeping the pointer down the list does not make every row jump
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                        if hovered == s.pid { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { opened = s.pid } }
+                                    }
+                                }
                                 .onTapGesture { if s.pid > 0 { ui.collapse(); focus(s) } }
                         }
                     }
@@ -401,9 +395,12 @@ struct Island: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
                 }
                 .scrollIndicators(.automatic)
-                .frame(height: min(listHeight, listCap))
+                // laid out at the final width from the first frame, so the text never rewraps while the island stretches;
+                // the growing outline uncovers it instead
+                .frame(width: expandedWidth, height: min(listHeight, listCap))
                 .onHover { if $0 { ui.reachedList = true } }
-                .transition(.opacity.animation(.easeOut(duration: 0.2).delay(0.1)))
+                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.28).delay(0.06)),
+                                        removal: .opacity.animation(.easeIn(duration: 0.08))))
             }
         }
         .frame(width: ui.expanded ? expandedWidth : pillWidth)
