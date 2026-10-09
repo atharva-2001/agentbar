@@ -318,71 +318,55 @@ struct IslandShape: Shape {
 }
 
 // full text of a message, shown when its row is open (a system tooltip needs the app active, which would take focus from kitty)
-struct FullText: View {
-    let text: String
-    let pal: Palette
-    var body: some View {
-        Text(text).font(mono(13)).foregroundStyle(pal.text.opacity(0.85)).lineSpacing(2)
-            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(pal.hover))
-            .transition(.opacity)
-    }
-}
-
-// hover a row and rest on it: the row grows to show the full message, its codex runs and what each run said last
+// hover a row and rest on it: the row itself grows. The message shows in full, then Claude's last reply,
+// then the session's codex runs with what each run said last. No separate box.
 struct Row: View {
     let s: Session
     let open: Bool
     let pal: Palette
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if s.pid > 0 {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(s.busy ? "✻" : "○").font(mono(s.busy ? 15 : 11, .bold))
-                        .foregroundStyle(s.busy ? claudeOrange : pal.dim).frame(width: 12)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(snippet(s.lastMsg)).font(mono(15)).foregroundStyle(pal.text).lineLimit(1)
-                        HStack(spacing: 6) {
-                            Text(s.cwd).lineLimit(1).truncationMode(.head).foregroundStyle(pathColor(s.cwd, dark: pal.isDark))
-                            if !s.codex.isEmpty && !open {
-                                Label("\(s.codex.count)", systemImage: "gearshape.2").foregroundStyle(pal.codex)
-                            }
-                        }.font(mono(12)).foregroundStyle(pal.dim)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(s.pid < 0 ? "" : s.busy ? "✻" : "○").font(mono(s.busy ? 14 : 11, .bold))
+                .foregroundStyle(s.busy ? claudeOrange : pal.dim).frame(width: 12)
+            VStack(alignment: .leading, spacing: 3) {
+                // path on top, so rows from one project read as a group at a glance
+                HStack(spacing: 6) {
+                    Text(s.cwd).lineLimit(1).truncationMode(.head)
+                        .foregroundStyle(s.pid < 0 ? pal.dim : pathColor(s.cwd, dark: pal.isDark))
+                    if !s.codex.isEmpty && !open && s.pid > 0 {
+                        Label("\(s.codex.count)", systemImage: "gearshape.2").foregroundStyle(pal.codex)
                     }
                     Spacer(minLength: 8)
-                    Text(ago(s.lastAt)).font(mono(12)).foregroundStyle(pal.dim)
+                    if s.pid > 0 { Text(ago(s.lastAt)).foregroundStyle(pal.dim) }
                 }
-                if open {
-                    if s.lastMsg.count > snippetLen { FullText(text: s.lastMsg, pal: pal).padding(.leading, 20) }
-                    if let r = s.lastReply {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("✻").foregroundStyle(claudeOrange)
-                            Text(r).lineLimit(6).foregroundStyle(pal.dim)
+                .font(mono(12))
+                if s.pid > 0 {
+                    Text(open ? s.lastMsg : snippet(s.lastMsg)).font(mono(15)).foregroundStyle(pal.text)
+                        .lineLimit(open ? nil : 1).fixedSize(horizontal: false, vertical: open)
+                }
+                if open, let r = s.lastReply {
+                    Text("✻ ").foregroundStyle(claudeOrange) + Text(r).foregroundStyle(pal.dim)
+                }
+                // codex runs stay hidden until the row grows (always shown for runs with no live session)
+                if open || s.pid < 0 {
+                    ForEach(s.codex) { c in
+                        let stalled = c.lastWrite.map { Date().timeIntervalSince($0) > 12 * 60 } ?? false   // RUNBOOK_CODEX stall rule
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "gearshape.2").foregroundStyle(stalled ? pal.stall : pal.codex)
+                                Text(c.name).foregroundStyle(pal.text).lineLimit(1)
+                                Text(stalled ? "Stalled, no write for \(ago(c.lastWrite))" : "Running \(ago(c.startedAt)), last write \(ago(c.lastWrite)) ago")
+                                    .foregroundStyle(stalled ? pal.stall : pal.dim).lineLimit(1)
+                            }
+                            Text(c.lastSay).foregroundStyle(pal.dim).lineLimit(4).padding(.leading, 22)
                         }
-                        .font(mono(13)).padding(.leading, 20).transition(.opacity)
+                        .padding(.top, 2)
                     }
                 }
-            } else {
-                Text(s.cwd).font(mono(12)).foregroundStyle(pal.dim)
             }
-            // codex runs stay hidden until the pointer is on their session (always shown for runs with no live session)
-            if open || s.pid < 0 {
-                ForEach(s.codex) { c in
-                    let stalled = c.lastWrite.map { Date().timeIntervalSince($0) > 12 * 60 } ?? false   // RUNBOOK_CODEX stall rule
-                    HStack(spacing: 8) {
-                        Image(systemName: "gearshape.2").foregroundStyle(stalled ? pal.stall : pal.codex).frame(width: 12)
-                        Text(c.name).foregroundStyle(pal.text).lineLimit(1)
-                        Text(stalled ? "Stalled, no write for \(ago(c.lastWrite))" : "Running \(ago(c.startedAt)), last write \(ago(c.lastWrite)) ago")
-                            .foregroundStyle(stalled ? pal.stall : pal.dim).lineLimit(1)
-                        Spacer(minLength: 8)
-                    }
-                    .font(mono(13)).padding(.leading, 20)
-                    .transition(.opacity)
-                    FullText(text: c.lastSay, pal: pal).padding(.leading, 40)
-                }
-            }
+            .font(mono(13))
         }
-        .padding(.vertical, 6).padding(.horizontal, 10)
+        .padding(.vertical, 7).padding(.horizontal, 10)
         .contentShape(Rectangle())
     }
 }
@@ -419,8 +403,15 @@ struct Island: View {
                         ForEach(model.sessions) { s in
                             Row(s: s, open: opened == s.pid, pal: pal)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if opened != s.pid && s.pid > 0 { rowHeight = $0 } }
-                                .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(hovered == s.pid && s.pid > 0 ? pal.hover : .clear))
+                                // hover: a wash of the project's color and a bar of it on the left edge
+                                .background(alignment: .leading) {
+                                    let on = hovered == s.pid && s.pid > 0
+                                    let tint = pathColor(s.cwd, dark: pal.isDark)
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(on ? (pal.isDark ? 0.16 : 0.12) : 0))
+                                        Capsule().fill(tint).frame(width: 3).padding(.vertical, 10).padding(.leading, 3).opacity(on ? 1 : 0)
+                                    }
+                                }
                                 .onHover { h in
                                     withAnimation(.easeOut(duration: 0.12)) { hovered = h ? s.pid : (hovered == s.pid ? nil : hovered) }
                                     if !h { if opened == s.pid { withAnimation(.easeOut(duration: 0.2)) { opened = nil } }; return }
