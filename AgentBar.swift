@@ -258,7 +258,7 @@ func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 
 let spring = Animation.spring(response: 0.45, dampingFraction: 0.82)
-let listCap: CGFloat = 520
+let listCap: CGFloat = (NSScreen.main?.visibleFrame.height ?? 900) - 120   // tallest the list can be dragged
 let expandedWidth: CGFloat = max(780, notchWidth + 500)
 let pillWidth: CGFloat = notchWidth + 200   // room after "busy" before the notch
 let flare: CGFloat = 8   // the concave curve where the island meets the top edge of the screen
@@ -362,6 +362,8 @@ struct Island: View {
     @State private var opened: Int32?
     @State private var listHeight: CGFloat = 0
     @State private var rowHeight: CGFloat = 48
+    @AppStorage("listMax") private var listMax: Double = 0   // dragged list height, 0 = five rows
+    @State private var dragStart: CGFloat?
 
     var body: some View {
         let pal = scheme == .dark ? Palette.dark : Palette.light
@@ -381,6 +383,9 @@ struct Island: View {
             .frame(width: pillWidth, height: notchHeight)
 
             if ui.expanded {
+              let fiveRows = 5 * (rowHeight + 1) + 20
+              let cap = listMax > 0 ? CGFloat(listMax) : fiveRows
+              VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(model.sessions) { s in
@@ -412,9 +417,23 @@ struct Island: View {
                 .scrollIndicators(.automatic)
                 // laid out at the final width from the first frame, so the text never rewraps while the island stretches;
                 // the growing outline uncovers it instead
-                // five rows tall at most, the rest scrolls
-                .frame(width: expandedWidth, height: min(listHeight, 5 * (rowHeight + 1) + 20, listCap))
+                // five rows tall at most until the handle is dragged, the rest scrolls
+                .frame(width: expandedWidth, height: min(listHeight, cap))
                 .onHover { if $0 { ui.reachedList = true } }
+                // drag handle: pull down for more rows, push up for fewer; the height is remembered
+                Capsule().fill(pal.dim.opacity(0.5)).frame(width: 40, height: 4)
+                    .frame(width: expandedWidth, height: 16).contentShape(Rectangle())
+                    .onHover { h in if h { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
+                    .gesture(DragGesture(minimumDistance: 1)
+                        .onChanged { g in
+                            ui.dragging = true
+                            let start = dragStart ?? min(listHeight, cap)
+                            dragStart = start
+                            listMax = Double(min(max(start + g.translation.height, 2 * (rowHeight + 1) + 20), listCap))
+                        }
+                        .onEnded { _ in dragStart = nil; ui.endDrag() })
+                    .onTapGesture(count: 2) { withAnimation(spring) { listMax = 0 } }   // double-click: back to five rows
+              }
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.28).delay(0.06)),
                                         removal: .opacity.animation(.easeIn(duration: 0.08))))
             }
@@ -434,13 +453,18 @@ final class UIState: ObservableObject {
     @Published var expanded = false
     var resize: (Bool) -> Void = { _ in }
     private var inside = false
+    var dragging = false   // resizing the list: the pointer may leave the island without closing it
+    func endDrag() {
+        dragging = false
+        if !inside { collapse() }
+    }
     var reachedList = false   // the pointer went down into the open list, not only across the pill
     func hover(_ h: Bool) {
         inside = h
         if h { if !expanded { expand() }; return }
         // a pointer that only brushed the pill closes it at once; after using the list, a short grace
         // so a pointer that slips past the edge does not slam it shut
-        DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.08 : 0)) { [self] in if !inside { collapse() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.08 : 0)) { [self] in if !inside && !dragging { collapse() } }
     }
     // grow the window first, then stretch the island inside it
     func expand() {
@@ -481,7 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let f = NSScreen.main?.frame else { return }
         // open: room for the island plus its shadow, closed: exactly the pill
         let w = open ? expandedWidth + 2 * flare + 80 : pillWidth + 2 * flare
-        let h = open ? notchHeight + listCap + 80 : notchHeight
+        let h = open ? notchHeight + listCap + 60 : notchHeight
         panel.setFrame(NSRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h), display: true)
     }
 }

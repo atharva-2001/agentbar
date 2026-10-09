@@ -8,6 +8,7 @@ session and the codex runs each session dispatched.
 - Rows are sorted by your last message, newest first. Each row shows the first 90 characters, the folder and the message age.
 - Sessions with no typed message are hidden. The theme follows the system light or dark setting.
 - Rest the pointer on a row to grow it: it shows your full message, its codex runs and the last reply of each run.
+- Drag the handle at the bottom to show more or fewer rows (remembered). Double-click it to go back to five rows.
 - Click a row to focus that session's kitty window.
 - Codex runs are hidden until the row grows. The row shows a gear count when it has runs.
 - Codex rows show run time and the age of the last rollout write. After 12 minutes with no write the
