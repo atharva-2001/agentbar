@@ -23,7 +23,6 @@ struct Session: Identifiable {
     let lastAt: Date?
     let tty: String?
     let kittyWin: String?
-    var lastReply: String? = nil
     var codex: [Codex] = []
     var id: Int32 { pid }
 }
@@ -82,18 +81,6 @@ let isoFrac: ISO8601DateFormatter = { let f = ISO8601DateFormatter(); f.formatOp
 func lastUserMessage(_ lines: [Substring]) -> (text: String, at: Date?)? {
     for l in lines.reversed() {
         if let d = json(l), let t = userText(d) { return (t, (d["timestamp"] as? String).flatMap(isoFrac.date)) }
-    }
-    return nil
-}
-
-// Claude's last text reply in a transcript (tool calls and thinking skipped)
-func lastClaudeReply(_ lines: [Substring]) -> String? {
-    for l in lines.reversed() {
-        guard let d = json(l), d["type"] as? String == "assistant", let m = d["message"] as? [String: Any],
-              let parts = m["content"] as? [[String: Any]] else { continue }
-        let t = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !t.isEmpty { return t }
     }
     return nil
 }
@@ -158,8 +145,7 @@ func scan() -> [Session] {
             lastMsg: msg?.text ?? "(no message yet)",
             lastAt: msg?.at,
             tty: tty.isEmpty || tty == "??" ? nil : "/dev/\(tty)",
-            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) },
-            lastReply: lastClaudeReply(tail))
+            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) })
         // a session with no typed message yet is not listed, unless it owns a codex run (added below)
         if msg == nil { pending[pid] = session } else { sessions[pid] = session }
     }
@@ -318,7 +304,7 @@ struct IslandShape: Shape {
 }
 
 // full text of a message, shown when its row is open (a system tooltip needs the app active, which would take focus from kitty)
-// hover a row and rest on it: the row itself grows. The message shows in full, then Claude's last reply,
+// hover a row and rest on it: the row itself grows. Your message shows in full,
 // then the session's codex runs with what each run said last. No separate box.
 struct Row: View {
     let s: Session
@@ -343,9 +329,6 @@ struct Row: View {
                 if s.pid > 0 {
                     Text(open ? s.lastMsg : snippet(s.lastMsg)).font(mono(15)).foregroundStyle(pal.text)
                         .lineLimit(open ? nil : 1).fixedSize(horizontal: false, vertical: open)
-                }
-                if open, let r = s.lastReply {
-                    Text("✻ ").foregroundStyle(claudeOrange) + Text(r).foregroundStyle(pal.dim)
                 }
                 // codex runs stay hidden until the row grows (always shown for runs with no live session)
                 if open || s.pid < 0 {
@@ -542,8 +525,6 @@ func selftest() {
     precondition(lastUserMessage(lines + [#"{"type":"queue-operation","operation":"enqueue","content":"mid turn"}"#])?.text == "mid turn")
     precondition(lastUserMessage(lines + [#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>x"}"#])?.text == "real ask")
     precondition(lastUserMessage(lines)?.at == isoFrac.date(from: "2026-10-09T11:23:46.043Z") && lastUserMessage(lines)?.at != nil)
-    precondition(lastClaudeReply([#"{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]}}"#,
-                                  #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#]) == "all done")
     precondition(lastCodexSay([#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
                          #"{"type":"event_msg","payload":{"type":"token_count"}}"#]) == "done")
     precondition(etimeSeconds("00:13") == 13 && etimeSeconds("2-00:00:01") == 172_801 && etimeSeconds("01:02:03") == 3723)
