@@ -21,9 +21,9 @@ struct Session: Identifiable {
     let busy: Bool
     let lastMsg: String
     let lastAt: Date?
-    var lastReply: String? = nil
     let tty: String?
     let kittyWin: String?
+    var lastReply: String? = nil
     var codex: [Codex] = []
     var id: Int32 { pid }
 }
