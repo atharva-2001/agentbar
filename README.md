@@ -9,6 +9,8 @@ session and the codex runs each session dispatched.
 - Sessions with no typed message are hidden. The theme follows the system light or dark setting.
 - Rest the pointer on a row to grow it: it shows your full message, its codex runs and the last reply of each run.
 - Drag the handle at the bottom to show more or fewer rows (remembered). Double-click it to go back to five rows.
+- Right-click a row to hide that session, or a codex run to hide that run. Hidden ones leave the list and the counts.
+  A link at the bottom shows them again. Hidden entries are forgotten when their session or run ends.
 - Click a row to focus that session's kitty window.
 - Codex runs are hidden until the row grows. The row shows a gear count when it has runs.
 - Codex rows show run time and the age of the last rollout write. After 12 minutes with no write the

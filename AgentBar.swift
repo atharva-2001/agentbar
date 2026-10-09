@@ -7,6 +7,7 @@ let home = FileManager.default.homeDirectoryForCurrentUser.path
 let snippetLen = 90
 
 struct Codex: Identifiable {
+    var hideKey: String { "c:\(pid):\(name)" }
     let pid: Int32
     let name: String
     let startedAt: Date
@@ -16,6 +17,7 @@ struct Codex: Identifiable {
 }
 
 struct Session: Identifiable {
+    var hideKey: String { "s:\(sid)" }
     let pid: Int32
     let cwd: String
     let busy: Bool
@@ -24,6 +26,7 @@ struct Session: Identifiable {
     let tty: String?
     let kittyWin: String?
     var codex: [Codex] = []
+    var sid = ""
     var id: Int32 { pid }
 }
 
@@ -145,7 +148,8 @@ func scan() -> [Session] {
             lastMsg: msg?.text ?? "(no message yet)",
             lastAt: msg?.at,
             tty: tty.isEmpty || tty == "??" ? nil : "/dev/\(tty)",
-            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) })
+            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) },
+            sid: sid)
         // a session with no typed message yet is not listed, unless it owns a codex run (added below)
         if msg == nil { pending[pid] = session } else { sessions[pid] = session }
     }
@@ -310,6 +314,8 @@ struct Row: View {
     let s: Session
     let open: Bool
     let pal: Palette
+    let hidden: Set<String>
+    let toggleHide: (String) -> Void
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(s.pid < 0 ? "" : s.busy ? "✻" : "○").font(mono(s.busy ? 14 : 11, .bold))
@@ -344,6 +350,8 @@ struct Row: View {
                             Text(c.lastSay).foregroundStyle(pal.dim).lineLimit(4).padding(.leading, 22)
                         }
                         .padding(.top, 2)
+                        .opacity(hidden.contains(c.hideKey) ? 0.4 : 1)
+                        .contextMenu { Button(hidden.contains(c.hideKey) ? "Show this run" : "Hide this run") { toggleHide(c.hideKey) } }
                     }
                 }
             }
@@ -351,6 +359,8 @@ struct Row: View {
         }
         .padding(.vertical, 7).padding(.horizontal, 10)
         .contentShape(Rectangle())
+        .opacity(hidden.contains(s.hideKey) ? 0.4 : 1)
+        .contextMenu { if s.pid > 0 { Button(hidden.contains(s.hideKey) ? "Show this session" : "Hide this session") { toggleHide(s.hideKey) } } }
     }
 }
 
@@ -364,11 +374,30 @@ struct Island: View {
     @State private var rowHeight: CGFloat = 48
     @AppStorage("listMax") private var listMax: Double = 0   // dragged list height, 0 = five rows
     @State private var dragStart: CGFloat?
+    @AppStorage("hidden") private var hiddenRaw = ""   // hide keys, newline separated
+    @State private var showHidden = false
+
+    func toggleHide(_ key: String) {
+        var h = Set(hiddenRaw.split(separator: "\n").map(String.init))
+        if h.remove(key) == nil { h.insert(key) }
+        withAnimation(spring) { hiddenRaw = h.sorted().joined(separator: "\n") }
+    }
 
     var body: some View {
         let pal = scheme == .dark ? Palette.dark : Palette.light
-        let live = model.sessions.filter { $0.pid > 0 }
-        let codex = model.sessions.reduce(0) { $0 + $1.codex.count }
+        let hidden = Set(hiddenRaw.split(separator: "\n").map(String.init))
+        // right-click a row to hide it; hidden rows and runs drop out of the list and the counts
+        let visible: [Session] = model.sessions.compactMap { s in
+            if hidden.contains(s.hideKey) && !showHidden { return nil }
+            var s = s
+            if !showHidden { s.codex.removeAll { hidden.contains($0.hideKey) } }
+            return s.pid < 0 && s.codex.isEmpty ? nil : s
+        }
+        let hiddenCount = model.sessions.reduce(0) { n, s in
+            n + (hidden.contains(s.hideKey) ? 1 : 0) + s.codex.filter { hidden.contains($0.hideKey) }.count
+        }
+        let live = visible.filter { $0.pid > 0 && !hidden.contains($0.hideKey) }
+        let codex = visible.reduce(0) { $0 + $1.codex.filter { !hidden.contains($0.hideKey) }.count }
         VStack(spacing: 0) {
             // the pill: text in the two "ears" beside the camera notch, the middle stays empty
             HStack(spacing: 6) {
@@ -388,8 +417,8 @@ struct Island: View {
               VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
-                        ForEach(model.sessions) { s in
-                            Row(s: s, open: opened == s.pid, pal: pal)
+                        ForEach(visible) { s in
+                            Row(s: s, open: opened == s.pid, pal: pal, hidden: hidden, toggleHide: toggleHide)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if opened != s.pid && s.pid > 0 { rowHeight = $0 } }
                                 // hover: a wash of the project's color and a bar of it on the left edge
                                 .background(alignment: .leading) {
@@ -433,6 +462,12 @@ struct Island: View {
                         }
                         .onEnded { _ in dragStart = nil; ui.endDrag() })
                     .onTapGesture(count: 2) { withAnimation(spring) { listMax = 0 } }   // double-click: back to five rows
+                    .overlay(alignment: .leading) {
+                        if hiddenCount > 0 {
+                            Button(showHidden ? "Hide \(hiddenCount) again" : "\(hiddenCount) hidden, show") { withAnimation(spring) { showHidden.toggle() } }
+                                .buttonStyle(.plain).font(mono(11)).foregroundStyle(pal.dim).padding(.leading, 20)
+                        }
+                    }
               }
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.18).delay(0.03)),
                                         removal: .opacity.animation(.easeIn(duration: 0.08))))
@@ -445,6 +480,13 @@ struct Island: View {
         .overlay(IslandShape().stroke(scheme == .dark ? .clear : .black.opacity(0.1), lineWidth: 1))   // light island needs an edge on a light menu bar
         .contentShape(IslandShape())
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.islandRect = $0 }
+        .onChange(of: model.sessions.map(\.pid)) {
+            // forget hidden keys for sessions and runs that ended, so the stored list does not grow forever
+            guard !model.sessions.isEmpty else { return }   // an empty scan must not wipe the list
+            let alive = Set(model.sessions.flatMap { [$0.hideKey] + $0.codex.map(\.hideKey) })
+            let kept = hiddenRaw.split(separator: "\n").map(String.init).filter(alive.contains)
+            if kept.count != hidden.count { hiddenRaw = kept.joined(separator: "\n") }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
