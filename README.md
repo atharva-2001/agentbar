@@ -1,5 +1,7 @@
 # AgentBar
 
+![AgentBar: hover the notch to see your Claude Code sessions](docs/demo.gif)
+
 A black island at the top center of the screen, around the notch. It lists every live Claude Code
 session and the codex runs each session dispatched.
 
