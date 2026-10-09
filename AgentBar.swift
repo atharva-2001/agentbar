@@ -444,7 +444,7 @@ struct Island: View {
         .clipShape(IslandShape())
         .overlay(IslandShape().stroke(scheme == .dark ? .clear : .black.opacity(0.1), lineWidth: 1))   // light island needs an edge on a light menu bar
         .contentShape(IslandShape())
-        .onHover { ui.hover($0) }   // pointer on the island opens it, pointer off closes it
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.islandRect = $0 }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
@@ -453,6 +453,7 @@ final class UIState: ObservableObject {
     @Published var expanded = false
     var resize: (Bool) -> Void = { _ in }
     private var inside = false
+    var islandRect = CGRect.zero   // the island's outline box in window points, top-left origin
     var dragging = false   // resizing the list: the pointer may leave the island without closing it
     func endDrag() {
         dragging = false
@@ -460,6 +461,7 @@ final class UIState: ObservableObject {
     }
     var reachedList = false   // the pointer went down into the open list, not only across the pill
     func hover(_ h: Bool) {
+        guard h != inside else { return }
         inside = h
         if h { if !expanded { expand() }; return }
         // a pointer that only brushed the pill closes it at once; after using the list, a short grace
@@ -496,9 +498,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         ui.resize = { [weak self] open in self?.place(open: open) }
+        // pointer tracking from raw mouse moves, not SwiftUI hover: exit is seen on the very next move, so it closes at once
+        panel.acceptsMouseMovedEvents = true
+        NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in self?.track() }
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] e in self?.track(); return e }
         place(open: false)
         panel.orderFrontRegardless()
         if CommandLine.arguments.contains("--expanded") { ui.expand() }
+    }
+
+    func track() {
+        let m = NSEvent.mouseLocation, f = panel.frame
+        let p = CGPoint(x: m.x - f.minX, y: f.maxY - m.y)   // to window points, top-left origin
+        ui.hover(ui.islandRect.insetBy(dx: flare, dy: 0).contains(p))
     }
 
     func place(open: Bool) {
