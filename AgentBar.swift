@@ -257,7 +257,7 @@ func pathColor(_ cwd: String, dark: Bool) -> Color {
 func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("Menlo", size: size).weight(weight) }
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 
-let spring = Animation.spring(response: 0.45, dampingFraction: 0.82)
+let spring = Animation.spring(response: 0.3, dampingFraction: 0.86)
 let listCap: CGFloat = (NSScreen.main?.visibleFrame.height ?? 900) - 120   // tallest the list can be dragged
 let expandedWidth: CGFloat = max(780, notchWidth + 500)
 let pillWidth: CGFloat = notchWidth + 200   // room after "busy" before the notch
@@ -404,8 +404,8 @@ struct Island: View {
                                     withAnimation(.easeOut(duration: 0.12)) { hovered = h ? s.pid : (hovered == s.pid ? nil : hovered) }
                                     if !h { if opened == s.pid { withAnimation(.easeOut(duration: 0.2)) { opened = nil } }; return }
                                     // a short rest before the row grows, so sweeping the pointer down the list does not make every row jump
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                        if hovered == s.pid { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { opened = s.pid } }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                        if hovered == s.pid { withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) { opened = s.pid } }
                                     }
                                 }
                                 .onTapGesture { if s.pid > 0 { ui.collapse(); focus(s) } }
@@ -434,7 +434,7 @@ struct Island: View {
                         .onEnded { _ in dragStart = nil; ui.endDrag() })
                     .onTapGesture(count: 2) { withAnimation(spring) { listMax = 0 } }   // double-click: back to five rows
               }
-                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.28).delay(0.06)),
+                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).animation(.easeOut(duration: 0.18).delay(0.03)),
                                         removal: .opacity.animation(.easeIn(duration: 0.08))))
             }
         }
@@ -451,8 +451,7 @@ struct Island: View {
 
 final class UIState: ObservableObject {
     @Published var expanded = false
-    var resize: (Bool) -> Void = { _ in }
-    private var inside = false
+    private(set) var inside = false
     var islandRect = CGRect.zero   // the island's outline box in window points, top-left origin
     var dragging = false   // resizing the list: the pointer may leave the island without closing it
     func endDrag() {
@@ -468,17 +467,13 @@ final class UIState: ObservableObject {
         // so a pointer that slips past the edge does not slam it shut
         DispatchQueue.main.asyncAfter(deadline: .now() + (reachedList ? 0.08 : 0)) { [self] in if !inside && !dragging { collapse() } }
     }
-    // grow the window first, then stretch the island inside it
     func expand() {
         reachedList = false
-        resize(true)
         withAnimation(spring) { expanded = true }
     }
-    // shrink the island, then the window once the animation is done
     func collapse() {
         guard expanded else { return }
         withAnimation(.spring(response: 0.2, dampingFraction: 1)) { expanded = false }   // closing is quicker than opening
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [self] in if !expanded { resize(false) } }
     }
 }
 
@@ -497,12 +492,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = false   // SwiftUI draws the shadow, so it follows the shape
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        ui.resize = { [weak self] open in self?.place(open: open) }
         // pointer tracking from raw mouse moves, not SwiftUI hover: exit is seen on the very next move, so it closes at once
         panel.acceptsMouseMovedEvents = true
         NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in self?.track() }
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] e in self?.track(); return e }
-        place(open: false)
+        place()
+        panel.ignoresMouseEvents = true
         panel.orderFrontRegardless()
         if CommandLine.arguments.contains("--expanded") { ui.expand() }
     }
@@ -511,13 +506,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSEvent.mouseLocation, f = panel.frame
         let p = CGPoint(x: m.x - f.minX, y: f.maxY - m.y)   // to window points, top-left origin
         ui.hover(ui.islandRect.insetBy(dx: flare, dy: 0).contains(p))
+        // clicks outside the island fall through to whatever is below (menu bar icons, windows)
+        panel.ignoresMouseEvents = !(ui.inside || ui.dragging)
     }
 
-    func place(open: Bool) {
+    // The window never changes size: resizing it mid-animation made the island jump for a frame.
+    // It is always big enough for the open island and its shadow; the transparent rest ignores the mouse.
+    func place() {
         guard let f = NSScreen.main?.frame else { return }
-        // open: room for the island plus its shadow, closed: exactly the pill
-        let w = open ? expandedWidth + 2 * flare + 80 : pillWidth + 2 * flare
-        let h = open ? notchHeight + listCap + 60 : notchHeight
+        let w = expandedWidth + 2 * flare + 80
+        let h = notchHeight + listCap + 60
         panel.setFrame(NSRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h), display: true)
     }
 }
