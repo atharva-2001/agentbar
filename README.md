@@ -2,7 +2,7 @@
 
 ![AgentBar: hover the notch to see your Claude Code sessions](docs/demo.gif)
 
-A black island at the top center of the screen, around the notch. It lists every live Claude Code
+An island at the top center of the screen, around the notch, in the system light or dark theme. It lists every live Claude Code
 session and the codex runs each session dispatched.
 
 - Pill: busy sessions on the left of the notch, total sessions and codex runs on the right.
