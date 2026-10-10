@@ -121,6 +121,12 @@ func ago(_ d: Date?) -> String {
 
 // MARK: scan
 
+// a scan reads only what changed: last message per transcript size, tty and kitty window per pid (fixed for a process's life).
+// scan() runs on one serial queue, so the caches need no lock.
+var msgCache: [String: (size: UInt64, msg: (text: String, at: Date?)?)] = [:]
+var pidCache: [Int32: (tty: String?, kittyWin: String?)] = [:]
+let scanQueue = DispatchQueue(label: "scan", qos: .utility)
+
 func scan() -> [Session] {
     let fm = FileManager.default
     let sessDir = "\(home)/.claude/sessions"
@@ -136,10 +142,20 @@ func scan() -> [Session] {
         // ponytail: glob over every project dir per session, cheap at ~20 sessions
         let transcript = ((try? fm.contentsOfDirectory(atPath: "\(home)/.claude/projects")) ?? [])
             .map { "\(home)/.claude/projects/\($0)/\(sid).jsonl" }.first { fm.fileExists(atPath: $0) }
-        let env = sh(["/bin/ps", "-Eww", "-o", "command=", "-p", "\(pid)"])
-        let tty = sh(["/bin/ps", "-o", "tty=", "-p", "\(pid)"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let tail = transcript.map { tailLines($0) } ?? []
-        let msg = lastUserMessage(tail) ?? transcript.flatMap { lastUserMessage(tailLines($0, bytes: .max)) }
+        let term = pidCache[pid] ?? {
+            let env = sh(["/bin/ps", "-Eww", "-o", "command=", "-p", "\(pid)"])
+            let tty = sh(["/bin/ps", "-o", "tty=", "-p", "\(pid)"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let t = (tty: tty.isEmpty || tty == "??" ? nil : "/dev/\(tty)",
+                     kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) })
+            pidCache[pid] = t
+            return t
+        }()
+        let size = transcript.flatMap { (try? fm.attributesOfItem(atPath: $0)[.size] as? NSNumber)?.uint64Value } ?? 0
+        let msg: (text: String, at: Date?)?
+        if let c = msgCache[sid], c.size == size { msg = c.msg } else {
+            msg = transcript.flatMap { lastUserMessage(tailLines($0)) ?? lastUserMessage(tailLines($0, bytes: .max)) }
+            msgCache[sid] = (size, msg)
+        }
         bySessionId[sid] = pid
         let session = Session(
             pid: pid,
@@ -147,8 +163,8 @@ func scan() -> [Session] {
             busy: d["status"] as? String == "busy",
             lastMsg: msg?.text ?? "(no message yet)",
             lastAt: msg?.at,
-            tty: tty.isEmpty || tty == "??" ? nil : "/dev/\(tty)",
-            kittyWin: env.split(separator: " ").first { $0.hasPrefix("KITTY_WINDOW_ID=") }.map { String($0.dropFirst(16)) },
+            tty: term.tty,
+            kittyWin: term.kittyWin,
             sid: sid)
         // a session with no typed message yet is not listed, unless it owns a codex run (added below)
         if msg == nil { pending[pid] = session } else { sessions[pid] = session }
@@ -194,6 +210,11 @@ func scan() -> [Session] {
         if let o = owner { sessions[o]?.codex.append(run) } else { orphans.append(run) }
     }
 
+    // drop cache entries for sessions that ended
+    let live = Set(bySessionId.values)
+    pidCache = pidCache.filter { live.contains($0.key) }
+    msgCache = msgCache.filter { bySessionId[$0.key] != nil }
+
     // newest message first
     var list = sessions.values.sorted { ($0.lastAt ?? .distantPast) > ($1.lastAt ?? .distantPast) }
     if !orphans.isEmpty {
@@ -227,7 +248,7 @@ final class Model: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
     }
     func refresh() {
-        DispatchQueue.global(qos: .utility).async {
+        scanQueue.async {
             let s = scan()
             DispatchQueue.main.async { withAnimation(spring) { self.sessions = s } }
         }
@@ -262,17 +283,19 @@ func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 
 let spring = Animation.spring(response: 0.3, dampingFraction: 0.86)
-let listCap: CGFloat = (NSScreen.main?.visibleFrame.height ?? 900) - 120   // tallest the list can be dragged
-let expandedWidth: CGFloat = max(780, notchWidth + 500)
-let pillWidth: CGFloat = notchWidth + 200   // room after "busy" before the notch
+// the island sits on the screen with the pointer, so these follow that screen
+var curScreen: NSScreen? = NSScreen.main
+var listCap: CGFloat { (curScreen?.visibleFrame.height ?? 900) - 120 }   // tallest the list can be dragged
+var expandedWidth: CGFloat { max(780, notchWidth + 500) }
+var pillWidth: CGFloat { notchWidth + 200 }   // room after "busy" before the notch
 let flare: CGFloat = 8   // the concave curve where the island meets the top edge of the screen
 
 // notch size from the screen, or a plain 32pt bar on screens without one
-let notchHeight: CGFloat = max(NSScreen.main?.safeAreaInsets.top ?? 0, 32)
-let notchWidth: CGFloat = {
-    guard let s = NSScreen.main, let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea else { return 0 }
+var notchHeight: CGFloat { max(curScreen?.safeAreaInsets.top ?? 0, 32) }
+var notchWidth: CGFloat {
+    guard let s = curScreen, let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea else { return 0 }
     return s.frame.width - l.width - r.width
-}()
+}
 
 // One outline for both states, so opening is the pill stretching, not a panel appearing.
 // A neck as wide as the pill runs down the menu bar (the menu bar icons stay clear), then curved shoulders flare out to the body.
@@ -539,13 +562,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in self?.track() }
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] e in self?.track(); return e }
         place()
+        // a display plugged in, unplugged or rearranged: start again on the main screen
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            curScreen = NSScreen.main
+            self?.place()
+        }
         panel.ignoresMouseEvents = true
         panel.orderFrontRegardless()
         if CommandLine.arguments.contains("--expanded") { ui.expand() }
     }
 
     func track() {
-        let m = NSEvent.mouseLocation, f = panel.frame
+        let m = NSEvent.mouseLocation
+        // the pointer moved to another display: the closed island moves there with it
+        if !ui.expanded, let s = NSScreen.screens.first(where: { NSMouseInRect(m, $0.frame, false) }), s != curScreen {
+            curScreen = s
+            place()
+        }
+        let f = panel.frame
         let p = CGPoint(x: m.x - f.minX, y: f.maxY - m.y)   // to window points, top-left origin
         ui.hover(ui.islandRect.insetBy(dx: flare, dy: 0).contains(p))
         // clicks outside the island fall through to whatever is below (menu bar icons, windows)
@@ -555,7 +589,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The window never changes size: resizing it mid-animation made the island jump for a frame.
     // It is always big enough for the open island and its shadow; the transparent rest ignores the mouse.
     func place() {
-        guard let f = NSScreen.main?.frame else { return }
+        guard let f = curScreen?.frame else { return }
+        ui.objectWillChange.send()   // redraw for this screen's notch
         let w = expandedWidth + 2 * flare + 80
         let h = notchHeight + listCap + 60
         panel.setFrame(NSRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h), display: true)
