@@ -18,6 +18,9 @@ session and the codex runs each session dispatched.
   reply. Click it to jump to that kitty window; right-click to dismiss. It also clears if the session goes busy again.
   In the open list those sessions show a green dot.
 - A session waiting on you (permission prompt, question, dialog) gets the same card with an orange dot and what it needs.
+
+  ![A waiting-on-you card under the island](docs/waiting-card.png)
+
 - Codex runs are hidden until the row grows. The row shows a gear count when it has runs.
 - Codex rows show run time and the age of the last rollout write. After 12 minutes with no write the
   row turns orange (the RUNBOOK_CODEX stall rule).
