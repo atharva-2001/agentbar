@@ -23,6 +23,10 @@ struct Session: Identifiable {
     let busy: Bool
     let lastMsg: String
     let lastAt: Date?
+    var lastReply = ""      // Claude's last text reply
+    var idle = false        // status "idle": the turn ended
+    var waiting: String?    // status "waiting": blocked on you (a permission prompt, a question, a dialog); what it needs
+    var statusAt = 0.0      // statusUpdatedAt, changes on every busy/idle flip
     let tty: String?
     let kittyWin: String?
     var codex: [Codex] = []
@@ -99,6 +103,18 @@ func lastCodexSay(_ lines: [Substring]) -> String? {
     return nil
 }
 
+// Claude's last text reply; tool-only and thinking-only turns are skipped
+func lastReply(_ lines: [Substring]) -> String? {
+    for l in lines.reversed() {
+        guard let d = json(l), d["type"] as? String == "assistant", let msg = d["message"] as? [String: Any],
+              let parts = msg["content"] as? [[String: Any]] else { continue }
+        let t = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+    }
+    return nil
+}
+
 func snippet(_ s: String) -> String {
     let flat = s.split(whereSeparator: \.isNewline).joined(separator: " ")
     return flat.count > snippetLen ? flat.prefix(snippetLen) + "…" : flat
@@ -123,7 +139,7 @@ func ago(_ d: Date?) -> String {
 
 // a scan reads only what changed: last message per transcript size, tty and kitty window per pid (fixed for a process's life).
 // scan() runs on one serial queue, so the caches need no lock.
-var msgCache: [String: (size: UInt64, msg: (text: String, at: Date?)?)] = [:]
+var msgCache: [String: (size: UInt64, msg: (text: String, at: Date?)?, reply: String?)] = [:]
 var pidCache: [Int32: (tty: String?, kittyWin: String?)] = [:]
 let scanQueue = DispatchQueue(label: "scan", qos: .utility)
 
@@ -152,9 +168,12 @@ func scan() -> [Session] {
         }()
         let size = transcript.flatMap { (try? fm.attributesOfItem(atPath: $0)[.size] as? NSNumber)?.uint64Value } ?? 0
         let msg: (text: String, at: Date?)?
-        if let c = msgCache[sid], c.size == size { msg = c.msg } else {
-            msg = transcript.flatMap { lastUserMessage(tailLines($0)) ?? lastUserMessage(tailLines($0, bytes: .max)) }
-            msgCache[sid] = (size, msg)
+        let reply: String?
+        if let c = msgCache[sid], c.size == size { (msg, reply) = (c.msg, c.reply) } else {
+            let tail = transcript.map { tailLines($0) } ?? []
+            msg = lastUserMessage(tail) ?? transcript.flatMap { lastUserMessage(tailLines($0, bytes: .max)) }
+            reply = lastReply(tail)
+            msgCache[sid] = (size, msg, reply)
         }
         bySessionId[sid] = pid
         let session = Session(
@@ -163,6 +182,10 @@ func scan() -> [Session] {
             busy: d["status"] as? String == "busy",
             lastMsg: msg?.text ?? "(no message yet)",
             lastAt: msg?.at,
+            lastReply: reply ?? "",
+            idle: d["status"] as? String == "idle",
+            waiting: d["status"] as? String == "waiting" ? (d["needs"] as? String ?? d["waitingFor"] as? String ?? "your input") : nil,
+            statusAt: (d["statusUpdatedAt"] as? NSNumber)?.doubleValue ?? 0,
             tty: term.tty,
             kittyWin: term.kittyWin,
             sid: sid)
@@ -242,6 +265,8 @@ func focus(_ s: Session) {
 
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
+    @Published var done: Set<String> = []   // session ids whose turn ended and that were not clicked since
+    private var prevStatus: [String: Double] = [:]
     private var timer: Timer?
     init() {
         refresh()
@@ -250,8 +275,23 @@ final class Model: ObservableObject {
     func refresh() {
         scanQueue.async {
             let s = scan()
-            DispatchQueue.main.async { withAnimation(spring) { self.sessions = s } }
+            DispatchQueue.main.async { withAnimation(spring) { self.sessions = s; self.markDone(s) } }
         }
+    }
+    // a turn ended or the session is waiting on you: it is idle or waiting now and its status changed since the last scan.
+    // Comparing statusUpdatedAt also catches a turn shorter than the 5 s scan. Busy again = you are in it, so it clears.
+    // ponytail: no check for "already looking at that kitty window"; kitty has no listen_on socket to ask which window is focused
+    func markDone(_ list: [Session]) {
+        for s in list where s.pid > 0 {
+            let needsYou = s.idle || s.waiting != nil
+            // first scan: a session already waiting on you shows; one already idle does not (it may be days old)
+            if needsYou, prevStatus[s.sid].map({ $0 != s.statusAt }) ?? (s.waiting != nil) { done.insert(s.sid) }
+            if !needsYou { done.remove(s.sid) }
+            prevStatus[s.sid] = s.statusAt
+        }
+        let live = Set(list.map(\.sid))
+        done = done.filter(live.contains)
+        prevStatus = prevStatus.filter { live.contains($0.key) }
     }
 }
 
@@ -261,6 +301,7 @@ final class Model: ObservableObject {
 struct Palette {
     var isDark: Bool { island == .black }
     let island, text, dim, hover, codex, stall: Color
+    var done: Color { isDark ? Color(red: 0.35, green: 0.85, blue: 0.5) : Color(red: 0.1, green: 0.6, blue: 0.3) }
     static let dark = Palette(island: .black, text: Color(white: 0.96), dim: Color(white: 0.6),
                               hover: .white.opacity(0.09), codex: Color(red: 0.48, green: 0.64, blue: 0.97), stall: Color(red: 0.96, green: 0.65, blue: 0.14))
     static let light = Palette(island: Color(white: 0.985), text: Color(white: 0.11), dim: Color(white: 0.45),
@@ -336,13 +377,14 @@ struct IslandShape: Shape {
 struct Row: View {
     let s: Session
     let open: Bool
+    var done = false
     let pal: Palette
     let hidden: Set<String>
     let toggleHide: (String) -> Void
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(s.pid < 0 ? "" : s.busy ? "✻" : "○").font(mono(s.busy ? 14 : 11, .bold))
-                .foregroundStyle(s.busy ? claudeOrange : pal.dim).frame(width: 12)
+            Text(s.pid < 0 ? "" : s.busy ? "✻" : done ? "●" : "○").font(mono(s.busy ? 14 : 11, .bold))
+                .foregroundStyle(s.busy ? claudeOrange : done ? (s.waiting != nil ? pal.stall : pal.done) : pal.dim).frame(width: 12)
             VStack(alignment: .leading, spacing: 3) {
                 // path on top, so rows from one project read as a group at a glance
                 HStack(spacing: 6) {
@@ -407,6 +449,52 @@ struct Island: View {
     }
 
     var body: some View {
+        VStack(spacing: 6) {
+            island
+            if !ui.expanded { doneCards }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // finished turns you have not clicked yet, hung under the closed island: your message and Claude's reply, one line each.
+    // Click one to jump to its kitty window; right-click to dismiss it. The open list marks them with a green dot.
+    @ViewBuilder var doneCards: some View {
+        let pal = scheme == .dark ? Palette.dark : Palette.light
+        let hidden = Set(hiddenRaw.split(separator: "\n").map(String.init))
+        let cards = model.sessions.filter { model.done.contains($0.sid) && !hidden.contains($0.hideKey) }
+        if !cards.isEmpty {
+            VStack(spacing: 4) {
+                ForEach(cards) { s in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("●").foregroundStyle(s.waiting != nil ? pal.stall : pal.done)
+                            Text(s.cwd).foregroundStyle(pathColor(s.cwd, dark: pal.isDark)).lineLimit(1).truncationMode(.head)
+                        }.font(mono(11))
+                        Text("› " + snippet(s.lastMsg)).foregroundStyle(pal.dim).lineLimit(1)
+                        if let w = s.waiting {
+                            Text("Waiting on you: " + snippet(w)).foregroundStyle(pal.stall).lineLimit(1)
+                        } else {
+                            Text(snippet(s.lastReply.isEmpty ? "(no text reply)" : s.lastReply)).foregroundStyle(pal.text).lineLimit(1)
+                        }
+                    }
+                    .font(mono(12))
+                    .padding(.vertical, 7).padding(.horizontal, 12)
+                    .frame(width: 520, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(pal.island))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(scheme == .dark ? .white.opacity(0.12) : .black.opacity(0.1)))
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.5 : 0.15), radius: 10, y: 4)
+                    .contentShape(Rectangle())
+                    .onTapGesture { withAnimation(spring) { _ = model.done.remove(s.sid) }; focus(s) }
+                    .contextMenu { Button("Dismiss") { withAnimation(spring) { _ = model.done.remove(s.sid) } } }
+                    .transition(.opacity.combined(with: .offset(y: -8)))
+                }
+            }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.cardsRect = $0 }
+            .onDisappear { ui.cardsRect = .zero }
+        }
+    }
+
+    @ViewBuilder var island: some View {
         let pal = scheme == .dark ? Palette.dark : Palette.light
         let hidden = Set(hiddenRaw.split(separator: "\n").map(String.init))
         // right-click a row to hide it; hidden rows and runs drop out of the list and the counts
@@ -441,7 +529,7 @@ struct Island: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(visible) { s in
-                            Row(s: s, open: opened == s.pid, pal: pal, hidden: hidden, toggleHide: toggleHide)
+                            Row(s: s, open: opened == s.pid, done: model.done.contains(s.sid), pal: pal, hidden: hidden, toggleHide: toggleHide)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if opened != s.pid && s.pid > 0 { rowHeight = $0 } }
                                 // hover: a wash of the project's color and a bar of it on the left edge
                                 .background(alignment: .leading) {
@@ -460,7 +548,7 @@ struct Island: View {
                                         if hovered == s.pid { withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) { opened = s.pid } }
                                     }
                                 }
-                                .onTapGesture { if s.pid > 0 { ui.collapse(); focus(s) } }
+                                .onTapGesture { if s.pid > 0 { model.done.remove(s.sid); ui.collapse(); focus(s) } }
                         }
                     }
                     .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 12)
@@ -510,7 +598,6 @@ struct Island: View {
             let kept = hiddenRaw.split(separator: "\n").map(String.init).filter(alive.contains)
             if kept.count != hidden.count { hiddenRaw = kept.joined(separator: "\n") }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -518,6 +605,7 @@ final class UIState: ObservableObject {
     @Published var expanded = false
     private(set) var inside = false
     var islandRect = CGRect.zero   // the island's outline box in window points, top-left origin
+    var cardsRect = CGRect.zero    // the finished-turn cards under the closed island, same coordinates
     var dragging = false   // resizing the list: the pointer may leave the island without closing it
     func endDrag() {
         dragging = false
@@ -583,7 +671,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let p = CGPoint(x: m.x - f.minX, y: f.maxY - m.y)   // to window points, top-left origin
         ui.hover(ui.islandRect.insetBy(dx: flare, dy: 0).contains(p))
         // clicks outside the island fall through to whatever is below (menu bar icons, windows)
-        panel.ignoresMouseEvents = !(ui.inside || ui.dragging)
+        let overCards = !ui.expanded && ui.cardsRect.contains(p)   // clickable, but hovering them does not open the island
+        panel.ignoresMouseEvents = !(ui.inside || ui.dragging || overCards)
     }
 
     // The window never changes size: resizing it mid-animation made the island jump for a frame.
@@ -608,6 +697,8 @@ enum Main {
         if CommandLine.arguments.contains("--dump") {
             for s in scan() {
                 print(s.busy ? "●" : "○", ago(s.lastAt), s.pid, s.kittyWin ?? "-", snippet(s.lastMsg), "|", s.cwd)
+                if let w = s.waiting { print("    ⏸ waiting:", w) }
+                if !s.lastReply.isEmpty { print("    ⏺", snippet(s.lastReply)) }
                 for c in s.codex { print("    ⚙", c.pid, c.name, "write", ago(c.lastWrite)) }
             }
             return
@@ -638,6 +729,9 @@ func selftest() {
     precondition(lastUserMessage(lines)?.at == isoFrac.date(from: "2026-10-09T11:23:46.043Z") && lastUserMessage(lines)?.at != nil)
     precondition(lastCodexSay([#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
                          #"{"type":"event_msg","payload":{"type":"token_count"}}"#]) == "done")
+    precondition(lastReply([#"{"type":"assistant","message":{"content":[{"type":"text","text":"the answer"}]}}"#,
+                            #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+                            #"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":""}]}}"#]) == "the answer")
     precondition(etimeSeconds("00:13") == 13 && etimeSeconds("2-00:00:01") == 172_801 && etimeSeconds("01:02:03") == 3723)
     precondition(snippet(String(repeating: "a", count: snippetLen + 10)).count == snippetLen + 1)
     precondition(snippet("a\nb") == "a b")

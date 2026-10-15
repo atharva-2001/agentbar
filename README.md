@@ -14,6 +14,10 @@ session and the codex runs each session dispatched.
 - Right-click a row to hide that session, or a codex run to hide that run. Hidden ones leave the list and the counts.
   A link at the bottom shows them again. Hidden entries are forgotten when their session or run ends.
 - Click a row to focus that session's kitty window.
+- When a session's turn ends, a card hangs under the closed island: one line of your message, one line of Claude's
+  reply. Click it to jump to that kitty window; right-click to dismiss. It also clears if the session goes busy again.
+  In the open list those sessions show a green dot.
+- A session waiting on you (permission prompt, question, dialog) gets the same card with an orange dot and what it needs.
 - Codex runs are hidden until the row grows. The row shows a gear count when it has runs.
 - Codex rows show run time and the age of the last rollout write. After 12 minutes with no write the
   row turns orange (the RUNBOOK_CODEX stall rule).
