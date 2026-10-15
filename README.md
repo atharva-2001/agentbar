@@ -20,6 +20,9 @@ session and the codex runs each session dispatched.
 - A session waiting on you gets the same card with an orange dot and what it needs. That is anything Claude Code
   reports as `status: waiting`: tool permission prompts (including ones a hook raises with an `ask` decision),
   questions from Claude, MCP input requests, sandbox requests and other dialogs. A hook that is only running counts as busy.
+- No card for the session you are already in: if kitty is in front and that session's window is focused, its card is
+  skipped, and a card clears once you switch to its window. This needs kitty's socket: add `listen_on unix:/tmp/kitty`
+  to kitty.conf and restart kitty. Without it every finished turn gets a card.
 
   ![A waiting-on-you card under the island](docs/waiting-card.png)
 
@@ -37,4 +40,8 @@ open AgentBar.app
 AgentBar.app/Contents/MacOS/AgentBar --dump   # print the scan as text
 ```
 
-Focus works through the session tty: kitty has `allow_remote_control yes` but no `listen_on` socket.
+Focus works through the session tty, so clicking needs only `allow_remote_control yes`. Knowing which window you are in
+needs the `listen_on` socket, because the tty route cannot read kitty's reply.
+
+Goes well with [kitty, but like iTerm](https://github.com/atharva-2001/kitty-but-like-iterm): the iTerm2 shortcuts,
+tabs and splits in kitty, which is where AgentBar's sessions live.

@@ -261,6 +261,24 @@ func focus(_ s: Session) {
     }
 }
 
+// the kitty window you are in, from kitty's remote-control socket (`listen_on unix:/tmp/kitty` in kitty.conf, kitty adds -<pid>).
+// nil with no socket: then every finished turn gets a card. The tty route used by focus() cannot read a reply.
+func focusedKittyWindow() -> String? {
+    let socks = ((try? FileManager.default.contentsOfDirectory(atPath: "/tmp")) ?? []).filter { $0.hasPrefix("kitty-") }
+    for sock in socks {
+        if let w = focusedWindow(sh(["/Applications/kitty.app/Contents/MacOS/kitten", "@", "--to", "unix:/tmp/\(sock)", "ls"])) { return w }
+    }
+    return nil
+}
+
+// id of the focused window in `kitten @ ls` output
+func focusedWindow(_ ls: String) -> String? {
+    guard let osWins = try? JSONSerialization.jsonObject(with: Data(ls.utf8)) as? [[String: Any]] else { return nil }
+    for o in osWins { for t in o["tabs"] as? [[String: Any]] ?? [] { for w in t["windows"] as? [[String: Any]] ?? []
+        where w["is_focused"] as? Bool == true { return (w["id"] as? NSNumber).map { "\($0)" } } } }
+    return nil
+}
+
 // MARK: UI
 
 final class Model: ObservableObject {
@@ -275,19 +293,24 @@ final class Model: ObservableObject {
     func refresh() {
         scanQueue.async {
             let s = scan()
-            DispatchQueue.main.async { withAnimation(spring) { self.sessions = s; self.markDone(s) } }
+            let win = focusedKittyWindow()
+            DispatchQueue.main.async {
+                let inKitty = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "net.kovidgoyal.kitty"
+                withAnimation(spring) { self.sessions = s; self.markDone(s, seenWin: inKitty ? win : nil) }
+            }
         }
     }
     // a turn ended or the session is waiting on you: it is idle or waiting now and its status changed since the last scan.
     // Comparing statusUpdatedAt also catches a turn shorter than the 5 s scan. Busy again = you are in it, so it clears.
-    // ponytail: no check for "already looking at that kitty window"; kitty has no listen_on socket to ask which window is focused
-    func markDone(_ list: [Session]) {
+    // the session in the kitty window you are in gets no card, and its card clears when you switch to it: you have seen it
+    func markDone(_ list: [Session], seenWin: String? = nil) {
         for s in list where s.pid > 0 {
             let needsYou = s.idle || s.waiting != nil
             // first scan: a session already waiting on you shows; one already idle does not (it may be days old)
             if needsYou, prevStatus[s.sid].map({ $0 != s.statusAt }) ?? (s.waiting != nil) { done.insert(s.sid) }
             if !needsYou { done.remove(s.sid) }
             prevStatus[s.sid] = s.statusAt
+            if seenWin != nil && s.kittyWin == seenWin { done.remove(s.sid) }
         }
         let live = Set(list.map(\.sid))
         done = done.filter(live.contains)
@@ -695,6 +718,7 @@ enum Main {
     static func main() {
         if CommandLine.arguments.contains("--selftest") { selftest(); return }
         if CommandLine.arguments.contains("--dump") {
+            print("focused kitty window:", focusedKittyWindow() ?? "unknown (no listen_on socket)")
             for s in scan() {
                 print(s.busy ? "●" : "○", ago(s.lastAt), s.pid, s.kittyWin ?? "-", snippet(s.lastMsg), "|", s.cwd)
                 if let w = s.waiting { print("    ⏸ waiting:", w) }
@@ -732,6 +756,8 @@ func selftest() {
     precondition(lastReply([#"{"type":"assistant","message":{"content":[{"type":"text","text":"the answer"}]}}"#,
                             #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
                             #"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":""}]}}"#]) == "the answer")
+    precondition(focusedWindow(#"[{"is_focused":true,"tabs":[{"windows":[{"id":3,"is_focused":false},{"id":7,"is_focused":true}]}]}]"#) == "7")
+    precondition(focusedWindow(#"[{"tabs":[{"windows":[{"id":3,"is_focused":false}]}]}]"#) == nil && focusedWindow("") == nil)
     precondition(etimeSeconds("00:13") == 13 && etimeSeconds("2-00:00:01") == 172_801 && etimeSeconds("01:02:03") == 3723)
     precondition(snippet(String(repeating: "a", count: snippetLen + 10)).count == snippetLen + 1)
     precondition(snippet("a\nb") == "a b")
