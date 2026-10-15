@@ -17,7 +17,9 @@ session and the codex runs each session dispatched.
 - When a session's turn ends, a card hangs under the closed island: one line of your message, one line of Claude's
   reply. Click it to jump to that kitty window; right-click to dismiss. It also clears if the session goes busy again.
   In the open list those sessions show a green dot.
-- A session waiting on you (permission prompt, question, dialog) gets the same card with an orange dot and what it needs.
+- A session waiting on you gets the same card with an orange dot and what it needs. That is anything Claude Code
+  reports as `status: waiting`: tool permission prompts (including ones a hook raises with an `ask` decision),
+  questions from Claude, MCP input requests, sandbox requests and other dialogs. A hook that is only running counts as busy.
 
   ![A waiting-on-you card under the island](docs/waiting-card.png)
 
